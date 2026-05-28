@@ -11,8 +11,7 @@ node_modules/
 frontend/node_modules/
 
 # Build outputs
-frontend/dist/
-backend/static/
+
 
 # Excel uploads (ไม่ commit ไฟล์จริง)
 backend/uploaded_files/*.xlsx
