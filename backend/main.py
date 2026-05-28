@@ -20,23 +20,23 @@ from search_engine import (
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploaded_files"
-STATIC_DIR = BASE_DIR / "static"          # frontend build output
+STATIC_DIR = BASE_DIR / "static"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Excel Search Tool")
 
-# CORS — อนุญาตทุก origin ใน dev / Railway จัดการ HTTPS เอง
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ── Startup: preload ทุกไฟล์ที่มีอยู่แล้ว ────────────────────────────────────
+# ── Startup: preload excel cache ──────────────────────────────────────────────
 @app.on_event("startup")
 def preload_existing_files():
     count = 0
@@ -67,7 +67,7 @@ class NavigateRequest(BaseModel):
     cell_ref:   str
 
 
-# ── API Endpoints ─────────────────────────────────────────────────────────────
+# ── API Routes (ต้องประกาศก่อน static mount) ─────────────────────────────────
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -189,14 +189,38 @@ def navigate(req: NavigateRequest):
     return result
 
 
-# ── Serve React Frontend (production) ────────────────────────────────────────
-if STATIC_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+# ── Static Files + SPA Fallback ───────────────────────────────────────────────
+# ⚠️ ต้องประกาศหลัง API routes ทั้งหมด
+if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
+    # Mount assets folder (js/css/images)
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-    @app.get("/{full_path:path}")
+    # Serve favicon และไฟล์ static อื่นๆ ที่ root
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        f = STATIC_DIR / "favicon.ico"
+        if f.exists():
+            return FileResponse(str(f))
+        raise HTTPException(404)
+
+    # SPA Fallback — ทุก path ที่ไม่ใช่ /api/* จะได้รับ index.html
+    @app.get("/{full_path:path}", include_in_schema=False)
     def serve_spa(full_path: str):
-        """ส่ง index.html ให้ React Router จัดการ"""
-        index = STATIC_DIR / "index.html"
-        if index.exists():
-            return FileResponse(str(index))
-        return {"error": "Frontend not built yet"}
+        # ถ้าเป็น file จริงๆ ใน static folder ให้ส่งตรงๆ
+        requested = STATIC_DIR / full_path
+        if requested.exists() and requested.is_file():
+            return FileResponse(str(requested))
+        # ทุกอย่างอื่น → index.html (React Router จัดการ)
+        return FileResponse(str(STATIC_DIR / "index.html"))
+
+else:
+    @app.get("/", include_in_schema=False)
+    def root_no_frontend():
+        return {
+            "message": "Excel Search Tool API running",
+            "note": "Frontend not built. Run: cd frontend && npm run build && cp -r dist ../backend/static",
+        }
+
+    print("[WARNING] frontend/static not found — serving API only")
